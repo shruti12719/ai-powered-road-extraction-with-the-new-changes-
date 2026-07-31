@@ -1062,7 +1062,7 @@ with tab_planner:
             key="ep_blocked_roads",
         )
 
-               find_route_clicked = st.button(
+        find_route_clicked = st.button(
             "🚑 FIND ROUTE",
             type="primary",
             width="stretch",
