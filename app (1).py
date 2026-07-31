@@ -1061,13 +1061,12 @@ with tab_planner:
             default=default_blocked,
             key="ep_blocked_roads",
         )
-
-    find_route_clicked = st.button(
+find_route_clicked = st.button(
             "🚑 FIND ROUTE",
             type="primary",
             width="stretch",
             key="ep_find_route",
-     )
+ )
 
         if not start_place or not dest_place:
 
