@@ -560,17 +560,47 @@ else:
     center_lat, center_lon, meters_per_pixel = float(selected_center_lat), float(selected_center_lon), scene.meters_per_pixel
 
 
-bundle = build_graph_bundle(broken_mask, max_gap=float(max_gap), angle_tolerance=float(angle_tolerance))
+bundle = build_graph_bundle(
+    broken_mask,
+    max_gap=float(max_gap),
+    angle_tolerance=float(angle_tolerance),
+)
+
 scores = centrality_scores(bundle.healed_graph)
-top_nodes = [node for node, _ in sorted(scores.items(), key=lambda item: item[1], reverse=True)[:disable_count]]
-synthetic_stress = stress_test(bundle.healed_graph, top_nodes)
-broken_metrics = segmentation_metrics(broken_mask, ground_truth, occlusion)
-healed_metrics = segmentation_metrics(bundle.healed_mask, ground_truth, occlusion)
+
+top_nodes = [
+    node
+    for node, _ in sorted(
+        scores.items(),
+        key=lambda item: item[1],
+        reverse=True,
+    )[:disable_count]
+]
+
+broken_metrics = segmentation_metrics(
+    broken_mask,
+    ground_truth,
+    occlusion,
+)
+
+healed_metrics = segmentation_metrics(
+    bundle.healed_mask,
+    ground_truth,
+    occlusion,
+)
 
 component_gain = 0.0
-if bundle.raw_components:
-    component_gain = (bundle.raw_components - bundle.healed_components) / bundle.raw_components
 
+if bundle.raw_components:
+    component_gain = (
+        bundle.raw_components - bundle.healed_components
+    ) / bundle.raw_components
+
+# Default value for Analytics before Satellite tab is rendered.
+synthetic_stress = stress_test(
+    bundle.healed_graph,
+    top_nodes,
+)
 
 tab_satellite, tab_planner, tab_analytics, tab_pipeline, tab_dataset = st.tabs(
     ["Satellite Image", "Emergency Planner", "Analytics", "Pipeline", "Dataset"]
@@ -580,99 +610,392 @@ tab_satellite, tab_planner, tab_analytics, tab_pipeline, tab_dataset = st.tabs(
 # TAB 1: Satellite Image (extraction + topology healing on the demo scene)
 # ---------------------------------------------------------------------------
 with tab_satellite:
-    kpi_cards(
-        [
-            {
-                "title": "Road Mask Quality",
-                "value": f"{healed_metrics['Dice']:.3f}",
-                "help": "Dice score after mask-to-graph healing.",
-                "color": "#24746b",
-            },
-            {
-                "title": "Occlusion Recovery",
-                "value": f"{healed_metrics.get('Occlusion recall', 0):.3f}",
-                "help": "Recovered road pixels under shadow or canopy.",
-                "color": "#557c2b",
-            },
-            {
-                "title": "Connected Components",
-                "value": f"{bundle.healed_components}",
-                "help": f"Reduced from {bundle.raw_components} fragmented components.",
-                "color": "#2c7bb6",
-            },
-            {
-                "title": "Healed Road Gaps",
-                "value": f"{len(bundle.bridged_edges)}",
-                "help": "MST/disjoint-set bridges added to restore topology.",
-                "color": "#a23b72",
-            },
-            {
-                "title": "Gatekeeper Nodes",
-                "value": f"{len(top_nodes)}",
-                "help": "High-betweenness nodes selected for the synthetic demo.",
-                "color": "#dd563b",
-            },
-            {
-                "title": "Synthetic Resilience Index",
-                "value": f"{synthetic_stress['resilience_index']:.3f}",
-                "help": "Baseline network cost divided by disaster network cost.",
-                "color": "#8a6f14",
-            },
-        ]
-    )
-    st.subheader("Road Extraction from Satellite Imagery")
-    c1, c2, c3 = st.columns(3)
-    c1.image(image, caption="Satellite tile", width="stretch")
-    c2.image(overlay_mask(image, broken_mask, (221, 86, 59), 0.62), caption="Broken road mask under occlusion", width="stretch")
-    c3.image(overlay_mask(image, bundle.healed_mask, (36, 116, 107), 0.62), caption="Healed routable topology", width="stretch")
 
-    table = pd.DataFrame(
-        [
-            {"Layer": "Broken mask", **broken_metrics},
-            {"Layer": "Healed graph mask", **healed_metrics},
-        ]
-    )
-    st.dataframe(table, hide_index=True, width="stretch")
+    # ---------------------------------------------------------------
+    # NODE FAILURE / ALTERNATE ROUTE CONTROLS
+    # ---------------------------------------------------------------
+    st.subheader("Node Failure & Alternate Route")
 
-    st.divider()
-    st.subheader("Topology & Gatekeeper Nodes")
-    left, right = st.columns([1.45, 1])
-    with left:
-        fmap = build_synthetic_map(
-            bundle.healed_graph,
-            scores,
-            top_nodes,
-            (center_lat, center_lon),
-            broken_mask.shape,
-            meters_per_pixel,
+    node_options = sorted(bundle.healed_graph.nodes())
+
+    if len(node_options) < 2:
+
+        st.error(
+            "The extracted road graph does not contain enough "
+            "nodes for route planning."
         )
-        st.iframe(fmap.get_root().render(), height=560)
-    with right:
-        st.markdown("**Critical Nodes**")
-        centrality_table = pd.DataFrame(
+
+    else:
+
+        route_cols = st.columns(2)
+
+        with route_cols[0]:
+
+            start_node = st.selectbox(
+                "Start Node",
+                node_options,
+                index=0,
+                key="sat_start_node",
+            )
+
+        with route_cols[1]:
+
+            dest_index = len(node_options) - 1
+
+            dest_node = st.selectbox(
+                "Destination Node",
+                node_options,
+                index=dest_index,
+                key="sat_dest_node",
+            )
+
+        # Do not allow start or destination to be disabled.
+        disable_options = [
+            node
+            for node in node_options
+            if node not in {start_node, dest_node}
+        ]
+
+        # Automatically suggest the highest-betweenness nodes.
+        auto_disabled = [
+            node
+            for node in top_nodes
+            if node in disable_options
+        ]
+
+        disabled_nodes = st.multiselect(
+            "Disable node(s)",
+            options=disable_options,
+            default=auto_disabled,
+            key="sat_disabled_nodes",
+            help=(
+                "Disable gatekeeper/intersection nodes to simulate "
+                "a road-network failure."
+            ),
+        )
+
+        # Stress test now uses exactly the nodes selected by the user.
+        synthetic_stress = stress_test(
+            bundle.healed_graph,
+            disabled_nodes,
+        )
+
+        # Create the damaged network.
+        damaged_graph = bundle.healed_graph.copy()
+
+        damaged_graph.remove_nodes_from(
             [
-                {
-                    "Node": node,
-                    "Betweenness": score,
-                    "Degree": int(bundle.healed_graph.degree[node]),
-                    "Disabled": node in top_nodes,
-                }
-                for node, score in sorted(scores.items(), key=lambda item: item[1], reverse=True)[:15]
+                node
+                for node in disabled_nodes
+                if node in damaged_graph
             ]
         )
-        st.dataframe(centrality_table, hide_index=True, width="stretch")
-        st.markdown(
-            f"<div class='rr-status'>Connectivity ratio improvement: {component_gain:.1%}<br>"
-            f"Raw components: {bundle.raw_components}<br>"
-            f"Healed components: {bundle.healed_components}</div>",
-            unsafe_allow_html=True,
-        )
-    st.caption(
-        "This tab runs entirely on the synthetic/uploaded demo scene from the sidebar. "
-        "It shows how the road-extraction + topology-healing pipeline works, independent of "
-        "the real-world routing in the Emergency Planner tab."
-    )
 
+        # Normal route on original graph.
+        baseline_path, baseline_px = synthetic_shortest_route(
+            bundle.healed_graph,
+            start_node,
+            dest_node,
+        )
+
+        find_sat_route = st.button(
+            "🚑 FIND ROUTE AFTER NODE FAILURE",
+            type="primary",
+            width="stretch",
+            key="sat_find_route",
+        )
+
+        emergency_path = None
+        emergency_px = float("inf")
+
+        if find_sat_route:
+
+            if (
+                start_node in disabled_nodes
+                or dest_node in disabled_nodes
+            ):
+
+                st.error(
+                    "Start and Destination nodes cannot be disabled."
+                )
+
+            else:
+
+                # Recalculate route after node failure.
+                emergency_path, emergency_px = (
+                    synthetic_shortest_route(
+                        damaged_graph,
+                        start_node,
+                        dest_node,
+                    )
+                )
+
+        st.divider()
+
+        # ---------------------------------------------------------------
+        # KPI CARDS
+        # ---------------------------------------------------------------
+        kpi_cards(
+            [
+                {
+                    "title": "Road Mask Quality",
+                    "value": f"{healed_metrics['Dice']:.3f}",
+                    "help": "Dice score after mask-to-graph healing.",
+                    "color": "#24746b",
+                },
+                {
+                    "title": "Occlusion Recovery",
+                    "value": (
+                        f"{healed_metrics.get('Occlusion recall', 0):.3f}"
+                    ),
+                    "help": (
+                        "Recovered road pixels under "
+                        "shadow or canopy."
+                    ),
+                    "color": "#557c2b",
+                },
+                {
+                    "title": "Connected Components",
+                    "value": f"{bundle.healed_components}",
+                    "help": (
+                        f"Reduced from {bundle.raw_components} "
+                        "fragmented components."
+                    ),
+                    "color": "#2c7bb6",
+                },
+                {
+                    "title": "Healed Road Gaps",
+                    "value": f"{len(bundle.bridged_edges)}",
+                    "help": (
+                        "MST/disjoint-set bridges added "
+                        "to restore topology."
+                    ),
+                    "color": "#a23b72",
+                },
+                {
+                    "title": "Gatekeeper Nodes",
+                    "value": f"{len(top_nodes)}",
+                    "help": (
+                        "Highest-betweenness nodes in "
+                        "the synthetic road graph."
+                    ),
+                    "color": "#dd563b",
+                },
+                {
+                    "title": "Synthetic Resilience Index",
+                    "value": (
+                        f"{synthetic_stress['resilience_index']:.3f}"
+                    ),
+                    "help": (
+                        "Baseline network cost divided "
+                        "by post-failure network cost."
+                    ),
+                    "color": "#8a6f14",
+                },
+            ]
+        )
+
+        # ---------------------------------------------------------------
+        # ROUTE COMPARISON
+        # ---------------------------------------------------------------
+        if find_sat_route:
+
+            route_cards(
+                [
+                    {
+                        "title": "Normal Route",
+                        "value": format_distance(
+                            baseline_px,
+                            meters_per_pixel,
+                        ),
+                        "help": (
+                            "Shortest route before "
+                            "disabling nodes."
+                        ),
+                        "color": "#1455d9",
+                    },
+                    {
+                        "title": "Emergency Route",
+                        "value": format_distance(
+                            emergency_px,
+                            meters_per_pixel,
+                        ),
+                        "help": (
+                            "Shortest route after the "
+                            "selected node failures."
+                            if emergency_path
+                            else
+                            "No route remains after "
+                            "the selected node failures."
+                        ),
+                        "color": (
+                            "#12a150"
+                            if emergency_path
+                            else "#dd563b"
+                        ),
+                    },
+                    {
+                        "title": "Disabled Nodes",
+                        "value": str(len(disabled_nodes)),
+                        "help": (
+                            "Gatekeeper/intersection nodes "
+                            "removed from routing."
+                        ),
+                        "color": "#111111",
+                    },
+                ]
+            )
+
+        # ---------------------------------------------------------------
+        # ROAD EXTRACTION
+        # ---------------------------------------------------------------
+        st.subheader("Road Extraction from Satellite Imagery")
+
+        c1, c2, c3 = st.columns(3)
+
+        c1.image(
+            image,
+            caption="Satellite tile",
+            width="stretch",
+        )
+
+        c2.image(
+            overlay_mask(
+                image,
+                broken_mask,
+                (221, 86, 59),
+                0.62,
+            ),
+            caption="Broken road mask under occlusion",
+            width="stretch",
+        )
+
+        c3.image(
+            overlay_mask(
+                image,
+                bundle.healed_mask,
+                (36, 116, 107),
+                0.62,
+            ),
+            caption="Healed routable topology",
+            width="stretch",
+        )
+
+        table = pd.DataFrame(
+            [
+                {
+                    "Layer": "Broken mask",
+                    **broken_metrics,
+                },
+                {
+                    "Layer": "Healed graph mask",
+                    **healed_metrics,
+                },
+            ]
+        )
+
+        st.dataframe(
+            table,
+            hide_index=True,
+            width="stretch",
+        )
+
+        # ---------------------------------------------------------------
+        # TOPOLOGY MAP
+        # ---------------------------------------------------------------
+        st.divider()
+
+        st.subheader(
+            "Topology & Gatekeeper Nodes"
+        )
+
+        left, right = st.columns(
+            [1.45, 1]
+        )
+
+        with left:
+
+            fmap = build_synthetic_map(
+                bundle.healed_graph,
+                scores,
+                disabled_nodes,
+                (center_lat, center_lon),
+                broken_mask.shape,
+                meters_per_pixel,
+                start_node=start_node,
+                end_node=dest_node,
+                baseline_path=baseline_path,
+                emergency_path=(
+                    emergency_path
+                    if find_sat_route
+                    else None
+                ),
+            )
+
+            st.iframe(
+                fmap.get_root().render(),
+                height=560,
+            )
+
+            st.caption(
+                "Blue = normal route · "
+                "Green = alternate route after node failure · "
+                "Black = disabled node · "
+                "Road colors = graph criticality."
+            )
+
+        with right:
+
+            st.markdown("**Critical Nodes**")
+
+            centrality_table = pd.DataFrame(
+                [
+                    {
+                        "Node": node,
+                        "Betweenness": score,
+                        "Degree": int(
+                            bundle.healed_graph.degree[node]
+                        ),
+                        "Disabled": (
+                            node in disabled_nodes
+                        ),
+                    }
+                    for node, score in sorted(
+                        scores.items(),
+                        key=lambda item: item[1],
+                        reverse=True,
+                    )[:15]
+                ]
+            )
+
+            st.dataframe(
+                centrality_table,
+                hide_index=True,
+                width="stretch",
+            )
+
+            st.markdown(
+                f"""
+                <div class='rr-status'>
+                Connectivity ratio improvement:
+                {component_gain:.1%}<br>
+                Raw components:
+                {bundle.raw_components}<br>
+                Healed components:
+                {bundle.healed_components}<br>
+                Disabled nodes:
+                {len(disabled_nodes)}
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+    st.caption(
+        "This tab runs entirely on the synthetic/uploaded demo scene "
+        "from the sidebar. Disable one or more gatekeeper nodes and "
+        "press FIND ROUTE AFTER NODE FAILURE to calculate a new route "
+        "on the remaining road graph."
+    )
 # ---------------------------------------------------------------------------
 # TAB 2: Emergency Planner (real OpenStreetMap road network)
 # ---------------------------------------------------------------------------
