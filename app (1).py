@@ -1062,12 +1062,12 @@ with tab_planner:
             key="ep_blocked_roads",
         )
 
-        find_route_clicked = st.button(
+    find_route_clicked = st.button(
             "🚑 FIND ROUTE",
             type="primary",
             width="stretch",
             key="ep_find_route",
-        )
+     )
 
         if not start_place or not dest_place:
 
@@ -1532,9 +1532,9 @@ with tab_pipeline:
         Road Graph Generation
                 |
                 v
-        Network Analysis
-           |                 |
-           v                 v
+             Network Analysis
+             |             |
+             v              v
         Critical Roads   Disaster Simulation
            |                 |
            +--------+--------+
@@ -1543,8 +1543,8 @@ with tab_pipeline:
         (Dijkstra / A*)
                     |
                     v
-        Interactive GIS Map
-        (Folium / Leaflet)
+            Interactive GIS Map
+             (Folium / Leaflet)
                     |
                     v
         Streamlit Dashboard
