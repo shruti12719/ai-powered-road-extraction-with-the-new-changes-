@@ -1062,115 +1062,389 @@ with tab_planner:
             key="ep_blocked_roads",
         )
 
-        find_route_clicked = st.button("🚑 FIND ROUTE", type="primary", width="stretch")
+               find_route_clicked = st.button(
+            "🚑 FIND ROUTE",
+            type="primary",
+            width="stretch",
+            key="ep_find_route",
+        )
 
-        if start_place and dest_place:
-            orig_node = nearest_node(ep_graph, start_place.lat, start_place.lon)
-            dest_node = nearest_node(ep_graph, dest_place.lat, dest_place.lon)
-            damaged_graph, removed_edges = block_roads_by_name(ep_graph, blocked_roads)
+        if not start_place or not dest_place:
 
-            baseline: RouteResult = shortest_route(ep_graph, orig_node, dest_node)
-            emergency: RouteResult = shortest_route(damaged_graph, orig_node, dest_node)
-
-            metrics_key = f"{ep_city}|{ep_radius_km}|{start_place.display_name}|{dest_place.display_name}|{tuple(sorted(blocked_roads))}"
-            if find_route_clicked:
-                with st.spinner("Computing network-wide resilience and critical roads..."):
-                    st.session_state["ep_resilience"] = network_resilience_index(ep_graph, damaged_graph)
-                    st.session_state["ep_critical_roads"] = critical_roads(ep_graph)
-                    st.session_state["ep_metrics_key"] = metrics_key
-
-            has_metrics = st.session_state.get("ep_metrics_key") == metrics_key
-            resilience = st.session_state.get("ep_resilience") if has_metrics else None
-            crit_roads = st.session_state.get("ep_critical_roads") if has_metrics else []
-
-            baseline_km = baseline.length_m / 1000.0
-            emergency_km = emergency.length_m / 1000.0
-            delay_min = None
-            if baseline.path and emergency.path and np.isfinite(baseline.time_min) and np.isfinite(emergency.time_min):
-                delay_min = emergency.time_min - baseline.time_min
-
-            route_cards(
-                [
-                    {
-                        "title": "Normal Route",
-                        "value": f"{baseline_km:.2f} km" if baseline.path else "No route",
-                        "help": f"{baseline.time_min:.1f} min at typical road speeds." if baseline.path else "Start or destination unreachable.",
-                        "color": "#1455d9",
-                    },
-                    {
-                        "title": "Emergency Route",
-                        "value": f"{emergency_km:.2f} km" if emergency.path else "No route",
-                        "help": f"{emergency.time_min:.1f} min with {len(blocked_roads)} road(s) blocked." if emergency.path else f"{disaster_scenario} disconnects the destination.",
-                        "color": "#12a150" if emergency.path else "#dd563b",
-                    },
-                    {
-                        "title": "Delay",
-                        "value": f"{delay_min:+.1f} min" if delay_min is not None else "N/A",
-                        "help": "Extra travel time caused by the disaster scenario.",
-                        "color": "#8a6f14",
-                    },
-                ]
+            st.info(
+                "Pick a Start and a Destination above, "
+                "then press FIND ROUTE."
             )
 
-            map_col, side_col = st.columns([1.4, 1])
-            with map_col:
-                fmap = build_emergency_map(
-                    ep_graph,
-                    center=(start_place.lat, start_place.lon),
-                    tile_choice=ep_tile,
-                    start_point=(start_place.lat, start_place.lon),
-                    end_point=(dest_place.lat, dest_place.lon),
-                    baseline_path=baseline.path,
-                    emergency_path=emergency.path,
-                    blocked_edges=removed_edges,
-                    amenities_gdf=ep_amenities,
-                )
-                st.iframe(fmap.get_root().render(), height=560)
-                st.caption("Blue = normal route · Green = emergency route · Red dashed = blocked road · Icons = hospital/police/airport/shelter")
-
-            with side_col:
-                st.markdown("**AI Summary**")
-                alt_hint = crit_roads[0][0] if crit_roads else None
-                ai_summary = generate_ai_summary(disaster_scenario, blocked_roads, bool(emergency.path), alt_hint, delay_min)
-                st.markdown(f"<div class='rr-status'>{ai_summary}</div>", unsafe_allow_html=True)
-
-                st.markdown("**Critical Roads**")
-                if crit_roads:
-                    st.dataframe(
-                        pd.DataFrame([{"Road": name, "Impact score": f"{score:.3f}"} for name, score in crit_roads]),
-                        hide_index=True,
-                        width="stretch",
-                    )
-                else:
-                    st.caption("Press FIND ROUTE to compute network resilience and critical roads.")
-
-                if has_metrics and resilience is not None:
-                    st.metric("Network Resilience Index", f"{resilience:.3f}", help="1.0 = no degradation. Sampled across the loaded network.")
-
-                    pdf_bytes = build_pdf_report(
-                        city=ep_city,
-                        scenario=disaster_scenario,
-                        start_name=start_place.display_name,
-                        dest_name=dest_place.display_name,
-                        blocked_roads=blocked_roads,
-                        baseline_km=baseline_km,
-                        baseline_min=baseline.time_min,
-                        emergency_km=emergency_km,
-                        emergency_min=emergency.time_min,
-                        delay_min=delay_min,
-                        resilience_index=resilience,
-                        critical_roads=crit_roads,
-                        ai_summary=ai_summary,
-                    )
-                    st.download_button(
-                        "📄 Download Report (PDF)",
-                        data=pdf_bytes,
-                        file_name=f"route_resilience_{ep_city.lower()}_{disaster_scenario.lower().replace(' ', '_')}.pdf",
-                        mime="application/pdf",
-                        width="stretch",
-                    )
         else:
-            st.info("Pick a Start and a Destination above (quick pick or search), then press FIND ROUTE.")
+
+            orig_node = nearest_node(
+                ep_graph,
+                start_place.lat,
+                start_place.lon,
+            )
+
+            dest_node = nearest_node(
+                ep_graph,
+                dest_place.lat,
+                dest_place.lon,
+            )
+
+            metrics_key = (
+                f"{ep_city}|"
+                f"{ep_radius_km}|"
+                f"{start_place.display_name}|"
+                f"{dest_place.display_name}|"
+                f"{tuple(sorted(blocked_roads))}"
+            )
+
+            # -------------------------------------------------------
+            # Calculate only when FIND ROUTE is pressed.
+            # -------------------------------------------------------
+            if find_route_clicked:
+
+                try:
+
+                    with st.spinner(
+                        "Computing emergency route, "
+                        "resilience, and critical roads..."
+                    ):
+
+                        damaged_graph, removed_edges = (
+                            block_roads_by_name(
+                                ep_graph,
+                                blocked_roads,
+                            )
+                        )
+
+                        baseline: RouteResult = shortest_route(
+                            ep_graph,
+                            orig_node,
+                            dest_node,
+                        )
+
+                        emergency: RouteResult = shortest_route(
+                            damaged_graph,
+                            orig_node,
+                            dest_node,
+                        )
+
+                        resilience = (
+                            network_resilience_index(
+                                ep_graph,
+                                damaged_graph,
+                            )
+                        )
+
+                        crit_roads = critical_roads(
+                            ep_graph
+                        )
+
+                        # Save results so they remain visible
+                        # after Streamlit reruns.
+                        st.session_state[
+                            "ep_route_key"
+                        ] = metrics_key
+
+                        st.session_state[
+                            "ep_baseline"
+                        ] = baseline
+
+                        st.session_state[
+                            "ep_emergency"
+                        ] = emergency
+
+                        st.session_state[
+                            "ep_removed_edges"
+                        ] = removed_edges
+
+                        st.session_state[
+                            "ep_resilience"
+                        ] = resilience
+
+                        st.session_state[
+                            "ep_critical_roads"
+                        ] = crit_roads
+
+                except Exception as exc:
+
+                    st.error(
+                        f"Route calculation failed: {exc}"
+                    )
+
+            # -------------------------------------------------------
+            # Check whether a result exists for the current inputs.
+            # -------------------------------------------------------
+            has_results = (
+                st.session_state.get("ep_route_key")
+                == metrics_key
+            )
+
+            if not has_results:
+
+                st.info(
+                    "Press FIND ROUTE to calculate the "
+                    "normal and disaster-aware route."
+                )
+
+            else:
+
+                baseline = st.session_state[
+                    "ep_baseline"
+                ]
+
+                emergency = st.session_state[
+                    "ep_emergency"
+                ]
+
+                removed_edges = st.session_state.get(
+                    "ep_removed_edges",
+                    [],
+                )
+
+                resilience = st.session_state.get(
+                    "ep_resilience"
+                )
+
+                crit_roads = st.session_state.get(
+                    "ep_critical_roads",
+                    [],
+                )
+
+                baseline_km = (
+                    baseline.length_m / 1000.0
+                )
+
+                emergency_km = (
+                    emergency.length_m / 1000.0
+                )
+
+                delay_min = None
+
+                if (
+                    baseline.path
+                    and emergency.path
+                    and np.isfinite(
+                        baseline.time_min
+                    )
+                    and np.isfinite(
+                        emergency.time_min
+                    )
+                ):
+                    delay_min = (
+                        emergency.time_min
+                        - baseline.time_min
+                    )
+
+                # ---------------------------------------------------
+                # Route cards
+                # ---------------------------------------------------
+                route_cards(
+                    [
+                        {
+                            "title": "Normal Route",
+                            "value": (
+                                f"{baseline_km:.2f} km"
+                                if baseline.path
+                                else "No route"
+                            ),
+                            "help": (
+                                f"{baseline.time_min:.1f} min "
+                                "at typical road speeds."
+                                if baseline.path
+                                else
+                                "Start or destination "
+                                "unreachable."
+                            ),
+                            "color": "#1455d9",
+                        },
+                        {
+                            "title": "Emergency Route",
+                            "value": (
+                                f"{emergency_km:.2f} km"
+                                if emergency.path
+                                else "No route"
+                            ),
+                            "help": (
+                                f"{emergency.time_min:.1f} min "
+                                f"with {len(blocked_roads)} "
+                                "road(s) blocked."
+                                if emergency.path
+                                else
+                                f"{disaster_scenario} "
+                                "disconnects the destination."
+                            ),
+                            "color": (
+                                "#12a150"
+                                if emergency.path
+                                else "#dd563b"
+                            ),
+                        },
+                        {
+                            "title": "Delay",
+                            "value": (
+                                f"{delay_min:+.1f} min"
+                                if delay_min is not None
+                                else "N/A"
+                            ),
+                            "help": (
+                                "Extra travel time caused "
+                                "by the disaster scenario."
+                            ),
+                            "color": "#8a6f14",
+                        },
+                    ]
+                )
+
+                # ---------------------------------------------------
+                # Map
+                # ---------------------------------------------------
+                map_col, side_col = st.columns(
+                    [1.4, 1]
+                )
+
+                with map_col:
+
+                    fmap = build_emergency_map(
+                        ep_graph,
+                        center=(
+                            start_place.lat,
+                            start_place.lon,
+                        ),
+                        tile_choice=ep_tile,
+                        start_point=(
+                            start_place.lat,
+                            start_place.lon,
+                        ),
+                        end_point=(
+                            dest_place.lat,
+                            dest_place.lon,
+                        ),
+                        baseline_path=baseline.path,
+                        emergency_path=emergency.path,
+                        blocked_edges=removed_edges,
+                        amenities_gdf=ep_amenities,
+                    )
+
+                    st.iframe(
+                        fmap.get_root().render(),
+                        height=560,
+                    )
+
+                    st.caption(
+                        "Blue = normal route · "
+                        "Green = emergency route · "
+                        "Red dashed = blocked road · "
+                        "Icons = hospital/police/airport/shelter"
+                    )
+
+                # ---------------------------------------------------
+                # Information panel
+                # ---------------------------------------------------
+                with side_col:
+
+                    st.markdown("**AI Summary**")
+
+                    alt_hint = (
+                        crit_roads[0][0]
+                        if crit_roads
+                        else None
+                    )
+
+                    ai_summary = generate_ai_summary(
+                        disaster_scenario,
+                        blocked_roads,
+                        bool(emergency.path),
+                        alt_hint,
+                        delay_min,
+                    )
+
+                    st.markdown(
+                        f"<div class='rr-status'>"
+                        f"{ai_summary}"
+                        f"</div>",
+                        unsafe_allow_html=True,
+                    )
+
+                    st.markdown(
+                        "**Critical Roads**"
+                    )
+
+                    if crit_roads:
+
+                        st.dataframe(
+                            pd.DataFrame(
+                                [
+                                    {
+                                        "Road": name,
+                                        "Impact score":
+                                            f"{score:.3f}",
+                                    }
+                                    for name, score
+                                    in crit_roads
+                                ]
+                            ),
+                            hide_index=True,
+                            width="stretch",
+                        )
+
+                    else:
+
+                        st.caption(
+                            "No critical-road ranking "
+                            "was returned."
+                        )
+
+                    if resilience is not None:
+
+                        st.metric(
+                            "Network Resilience Index",
+                            f"{resilience:.3f}",
+                            help=(
+                                "1.0 = no degradation. "
+                                "Sampled across the loaded network."
+                            ),
+                        )
+
+                        # ------------------------------------------------
+                        # PDF report
+                        # ------------------------------------------------
+                        pdf_bytes = build_pdf_report(
+                            city=ep_city,
+                            scenario=disaster_scenario,
+                            start_name=(
+                                start_place.display_name
+                            ),
+                            dest_name=(
+                                dest_place.display_name
+                            ),
+                            blocked_roads=blocked_roads,
+                            baseline_km=baseline_km,
+                            baseline_min=(
+                                baseline.time_min
+                            ),
+                            emergency_km=emergency_km,
+                            emergency_min=(
+                                emergency.time_min
+                            ),
+                            delay_min=delay_min,
+                            resilience_index=resilience,
+                            critical_roads=crit_roads,
+                            ai_summary=ai_summary,
+                        )
+
+                        st.download_button(
+                            "📄 Download Report (PDF)",
+                            data=pdf_bytes,
+                            file_name=(
+                                f"route_resilience_"
+                                f"{ep_city.lower()}_"
+                                f"{disaster_scenario.lower().replace(' ', '_')}"
+                                f".pdf"
+                            ),
+                            mime="application/pdf",
+                            width="stretch",
+                        )
 
 # ---------------------------------------------------------------------------
 # TAB 3: Analytics
