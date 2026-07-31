@@ -1,0 +1,21 @@
+streamlit>=1.40
+folium>=0.17
+networkx>=3.0
+numpy>=1.26
+pandas>=2.0
+opencv-python-headless>=4.8
+pillow>=10.0
+scikit-image>=0.22
+torch>=2.0
+torchvision>=0.15
+segmentation-models-pytorch>=0.3
+tqdm>=4.66
+
+# --- Emergency Planner (real-world routing) additions ---
+osmnx>=1.9
+geopy>=2.4
+fpdf2>=2.7
+streamlit-js-eval>=0.1.7
+geopandas>=0.14
+shapely>=2.0
+Scikit-learn
